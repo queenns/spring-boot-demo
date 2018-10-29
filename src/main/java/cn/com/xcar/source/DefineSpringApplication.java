@@ -4,10 +4,15 @@ package cn.com.xcar.source;
 import cn.com.xcar.copy.EnvironmentConverter;
 import cn.com.xcar.copy.SpringApplicationRunListeners;
 import cn.com.xcar.copy.SpringApplicationBannerPrinter;
+import cn.com.xcar.copy.StartupInfoLogger;
+import cn.com.xcar.copy.BeanDefinitionLoader;
+import cn.com.xcar.copy.ExitCodeGenerators;
+import cn.com.xcar.copy.SpringBootExceptionHandler;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.CachedIntrospectionResults;
+import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.beans.factory.support.BeanNameGenerator;
 import org.springframework.boot.*;
 import org.springframework.boot.context.ContextIdApplicationContextInitializer;
@@ -20,6 +25,7 @@ import org.springframework.context.ApplicationContextInitializer;
 import org.springframework.context.ApplicationListener;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.AnnotationConfigUtils;
+import org.springframework.context.support.AbstractApplicationContext;
 import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.core.GenericTypeResolver;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
@@ -27,13 +33,11 @@ import org.springframework.core.env.*;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.core.io.support.SpringFactoriesLoader;
-import org.springframework.util.Assert;
-import org.springframework.util.ClassUtils;
-import org.springframework.util.StopWatch;
-import org.springframework.util.StringUtils;
+import org.springframework.util.*;
 import org.springframework.web.context.support.StandardServletEnvironment;
 
 import java.lang.reflect.Constructor;
+import java.security.AccessControlException;
 import java.util.*;
 
 /**
@@ -421,7 +425,9 @@ public class DefineSpringApplication extends SpringApplication {
      * 7.输出Banner                      {@link this#printBanner(ConfigurableEnvironment)}
      * 8.根据环境类型创建应用程序上下文环境     {@link this#createApplicationContext()}
      * 9.获取异常报告器
-     * 10.
+     * 10.准备应用程序上下文                {@link this#prepareContext(ConfigurableApplicationContext, ConfigurableEnvironment, SpringApplicationRunListeners, ApplicationArguments, Banner)}
+     * 11.刷新应用程序上下文
+     * 12.
      *
      * @param args 应用程序参数，通常使用Main方法传递，例如 --spring.profiles.active/--spring.main.sources/etc
      * @return {@link ConfigurableApplicationContext}
@@ -442,7 +448,7 @@ public class DefineSpringApplication extends SpringApplication {
 
         listeners.starting();
 
-        /*try {
+        try {
 
             ApplicationArguments applicationArguments = new DefaultApplicationArguments(args);
 
@@ -454,7 +460,7 @@ public class DefineSpringApplication extends SpringApplication {
 
             context = createApplicationContext();
 
-            exceptionReporters = getSpringFactoriesInstances(SpringBootExceptionReporter.class, new Class[] { ConfigurableApplicationContext.class }, context);
+            exceptionReporters = getSpringFactoriesInstances(SpringBootExceptionReporter.class, new Class[]{ConfigurableApplicationContext.class}, context);
 
             prepareContext(context, environment, listeners, applicationArguments, printedBanner);
 
@@ -494,8 +500,7 @@ public class DefineSpringApplication extends SpringApplication {
 
         }
 
-        return context;*/
-        return null;
+        return context;
 
     }
 
@@ -775,13 +780,18 @@ public class DefineSpringApplication extends SpringApplication {
      * 2.为上下文自定义扩展一些东西             {@link this#postProcessApplicationContext(ConfigurableApplicationContext)}
      * 3.在上下文刷新之前将初始器应用到上下文      {@link this#applyInitializers(ConfigurableApplicationContext)}
      * 4.上下文加载准备时，加载源之前监听器处理，从当前看执行监听器没有具体处理的内容
-     * 5.
+     * 5.打印启动信息日志及激活属性信息日志
+     * 6.将{@link ApplicationArguments}以单例形式注册到BeanFactory
+     * 7.根据条件判断Banner输出器是否以单例形式注册到BeanFactory
+     * 8.合并主要源和其它源                   {@link this#getAllSources()}
+     * 9.将所有源注册到注册列表
+     * 10.将监听器加载到上下文
      *
-     * @param context
-     * @param environment
-     * @param listeners
-     * @param applicationArguments
-     * @param printedBanner
+     * @param context              context
+     * @param environment          environment
+     * @param listeners            listeners
+     * @param applicationArguments applicationArguments
+     * @param printedBanner        printedBanner
      */
     private void prepareContext(ConfigurableApplicationContext context, ConfigurableEnvironment environment, SpringApplicationRunListeners listeners, ApplicationArguments applicationArguments, Banner printedBanner) {
 
@@ -906,5 +916,306 @@ public class DefineSpringApplication extends SpringApplication {
 
     }
 
+    /**
+     * 调用记录启动信息日志，子类可以重写添加额外的信息
+     *
+     * @param isRoot 是否为根上下文
+     */
+    protected void logStartupInfo(boolean isRoot) {
+
+        if (isRoot)
+
+            new StartupInfoLogger(this.mainApplicationClass).logStarting(getApplicationLog());
+
+    }
+
+    /**
+     * 调用记录激活的属性信息日志
+     *
+     * @param context 上下文
+     */
+    protected void logStartupProfileInfo(ConfigurableApplicationContext context) {
+
+        Log log = getApplicationLog();
+
+        if (log.isInfoEnabled()) {
+
+            String[] activeProfiles = context.getEnvironment().getActiveProfiles();
+
+            if (ObjectUtils.isEmpty(activeProfiles)) {
+
+                String[] defaultProfiles = context.getEnvironment().getDefaultProfiles();
+
+                log.info("No active profile set, falling back to default profiles: " + StringUtils.arrayToCommaDelimitedString(defaultProfiles));
+
+            } else {
+
+                log.info("The following profiles are active: " + StringUtils.arrayToCommaDelimitedString(activeProfiles));
+
+            }
+
+        }
+
+    }
+
+    /**
+     * 合并主要源和其它源
+     *
+     * @return Set
+     */
+    public Set<Object> getAllSources() {
+
+        Set<Object> allSources = new LinkedHashSet<>();
+
+        if (!CollectionUtils.isEmpty(this.primarySources))
+
+            allSources.addAll(this.primarySources);
+
+        if (!CollectionUtils.isEmpty(this.sources))
+
+            allSources.addAll(this.sources);
+
+        return Collections.unmodifiableSet(allSources);
+
+    }
+
+    /**
+     * 将bean加载到应用程序上下文
+     *
+     * @param context context
+     * @param sources sources
+     */
+    protected void load(ApplicationContext context, Object[] sources) {
+
+        if (logger.isDebugEnabled())
+
+            logger.debug("Loading source " + StringUtils.arrayToCommaDelimitedString(sources));
+
+        BeanDefinitionLoader loader = createBeanDefinitionLoaderCopy(getBeanDefinitionRegistry(context), sources);
+
+        if (this.beanNameGenerator != null)
+
+            loader.setBeanNameGenerator(this.beanNameGenerator);
+
+        if (this.resourceLoader != null)
+
+            loader.setResourceLoader(this.resourceLoader);
+
+        if (this.environment != null)
+
+            loader.setEnvironment(this.environment);
+
+        loader.load();
+
+    }
+
+    /**
+     * 获取bean定义注册器
+     * 判断上下文转化类型
+     *
+     * @param context context
+     * @return {@link BeanDefinitionRegistry}
+     */
+    private BeanDefinitionRegistry getBeanDefinitionRegistry(ApplicationContext context) {
+
+        if (context instanceof BeanDefinitionRegistry)
+
+            return (BeanDefinitionRegistry) context;
+
+        if (context instanceof AbstractApplicationContext)
+
+            return (BeanDefinitionRegistry) ((AbstractApplicationContext) context).getBeanFactory();
+
+        throw new IllegalStateException("Could not locate BeanDefinitionRegistry");
+
+    }
+
+    /**
+     * 创建bean定义加载器
+     *
+     * @param registry registry
+     * @param sources  sources
+     * @return {@link BeanDefinitionLoader}
+     */
+    protected BeanDefinitionLoader createBeanDefinitionLoaderCopy(BeanDefinitionRegistry registry, Object[] sources) {
+
+        return new BeanDefinitionLoader(registry, sources);
+
+    }
+
+    /**
+     * 刷新应用程序上下文
+     * 判断是否注册上下文关闭钩子
+     *
+     * @param context context
+     */
+    private void refreshContext(ConfigurableApplicationContext context) {
+
+        refresh(context);
+
+        if (this.registerShutdownHook) {
+
+            try {
+
+                context.registerShutdownHook();
+
+            } catch (AccessControlException ex) {
+                // Not allowed in some environments.
+            }
+
+        }
+
+    }
+
+    /**
+     * 刷新上下文
+     *
+     * @param applicationContext the application context to refresh
+     */
+    protected void refresh(ApplicationContext applicationContext) {
+
+        Assert.isInstanceOf(AbstractApplicationContext.class, applicationContext);
+
+        ((AbstractApplicationContext) applicationContext).refresh();
+
+    }
+
+    /**
+     * 上下文刷新后调用，改方法可扩展.
+     *
+     * @param context context
+     * @param args    args
+     */
+    protected void afterRefresh(ConfigurableApplicationContext context, ApplicationArguments args) {
+
+    }
+
+    private void callRunners(ApplicationContext context, ApplicationArguments args) {
+        List<Object> runners = new ArrayList<>();
+        runners.addAll(context.getBeansOfType(ApplicationRunner.class).values());
+        runners.addAll(context.getBeansOfType(CommandLineRunner.class).values());
+        AnnotationAwareOrderComparator.sort(runners);
+        for (Object runner : new LinkedHashSet<>(runners)) {
+            if (runner instanceof ApplicationRunner) {
+                callRunner((ApplicationRunner) runner, args);
+            }
+            if (runner instanceof CommandLineRunner) {
+                callRunner((CommandLineRunner) runner, args);
+            }
+        }
+    }
+
+    private void callRunner(ApplicationRunner runner, ApplicationArguments args) {
+        try {
+            (runner).run(args);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Failed to execute ApplicationRunner", ex);
+        }
+    }
+
+    private void callRunner(CommandLineRunner runner, ApplicationArguments args) {
+        try {
+            (runner).run(args.getSourceArgs());
+        } catch (Exception ex) {
+            throw new IllegalStateException("Failed to execute CommandLineRunner", ex);
+        }
+    }
+
+    private void handleRunFailure(ConfigurableApplicationContext context,
+                                  Throwable exception,
+                                  Collection<SpringBootExceptionReporter> exceptionReporters,
+                                  SpringApplicationRunListeners listeners) {
+        try {
+            try {
+                handleExitCode(context, exception);
+                if (listeners != null) {
+                    listeners.failed(context, exception);
+                }
+            } finally {
+                reportFailure(exceptionReporters, exception);
+                if (context != null) {
+                    context.close();
+                }
+            }
+        } catch (Exception ex) {
+            logger.warn("Unable to close ApplicationContext", ex);
+        }
+        ReflectionUtils.rethrowRuntimeException(exception);
+    }
+
+    private void handleExitCode(ConfigurableApplicationContext context,
+                                Throwable exception) {
+        int exitCode = getExitCodeFromException(context, exception);
+        if (exitCode != 0) {
+            if (context != null) {
+                context.publishEvent(new ExitCodeEvent(context, exitCode));
+            }
+            SpringBootExceptionHandler handler = getSpringBootExceptionHandler();
+            if (handler != null) {
+                handler.registerExitCode(exitCode);
+            }
+        }
+    }
+
+    private int getExitCodeFromException(ConfigurableApplicationContext context,
+                                         Throwable exception) {
+        int exitCode = getExitCodeFromMappedException(context, exception);
+        if (exitCode == 0) {
+            exitCode = getExitCodeFromExitCodeGeneratorException(exception);
+        }
+        return exitCode;
+    }
+
+    private int getExitCodeFromMappedException(ConfigurableApplicationContext context,
+                                               Throwable exception) {
+        if (context == null || !context.isActive()) {
+            return 0;
+        }
+        ExitCodeGenerators generators = new ExitCodeGenerators();
+        Collection<ExitCodeExceptionMapper> beans = context.getBeansOfType(ExitCodeExceptionMapper.class).values();
+        generators.addAll(exception, beans);
+        return generators.getExitCode();
+    }
+
+    private int getExitCodeFromExitCodeGeneratorException(Throwable exception) {
+        if (exception == null) {
+            return 0;
+        }
+        if (exception instanceof ExitCodeGenerator) {
+            return ((ExitCodeGenerator) exception).getExitCode();
+        }
+        return getExitCodeFromExitCodeGeneratorException(exception.getCause());
+    }
+
+    SpringBootExceptionHandler getSpringBootExceptionHandler() {
+        if (isMainThread(Thread.currentThread())) {
+            return SpringBootExceptionHandler.forCurrentThread();
+        }
+        return null;
+    }
+
+    private boolean isMainThread(Thread currentThread) {
+        return ("main".equals(currentThread.getName())
+                || "restartedMain".equals(currentThread.getName()))
+                && "main".equals(currentThread.getThreadGroup().getName());
+    }
+
+    private void reportFailure(Collection<SpringBootExceptionReporter> exceptionReporters,
+                               Throwable failure) {
+        try {
+            for (SpringBootExceptionReporter reporter : exceptionReporters) {
+                if (reporter.reportException(failure)) {
+                    registerLoggedException(failure);
+                    return;
+                }
+            }
+        } catch (Throwable ex) {
+            // Continue with normal handling of the original failure
+        }
+        if (logger.isErrorEnabled()) {
+            logger.error("Application run failed", failure);
+            registerLoggedException(failure);
+        }
+    }
 
 }
