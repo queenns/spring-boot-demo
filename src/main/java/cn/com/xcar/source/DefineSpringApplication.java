@@ -419,15 +419,20 @@ public class DefineSpringApplication extends SpringApplication {
      * 1.创建一个{@link StopWatch}任务计时秒表并启动，统计run运行时间
      * 2.配置Java_AWT_HEADLESS           {@link this#configureHeadlessProperty()}
      * 3.获取Spring应用程序运行监听器并启动   {@link this#getRunListeners(String[])}
-     * 4.将args转换为{@link ApplicationArguments}
+     * 4.转换args                        {@link ApplicationArguments}
      * 5.做环境准备                       {@link this#prepareEnvironment(SpringApplicationRunListeners, ApplicationArguments)}
      * 6.设置spring.beaninfo.ignore      {@link this#configureIgnoreBeanInfo(ConfigurableEnvironment)}
      * 7.输出Banner                      {@link this#printBanner(ConfigurableEnvironment)}
      * 8.根据环境类型创建应用程序上下文环境     {@link this#createApplicationContext()}
      * 9.获取异常报告器
      * 10.准备应用程序上下文                {@link this#prepareContext(ConfigurableApplicationContext, ConfigurableEnvironment, SpringApplicationRunListeners, ApplicationArguments, Banner)}
-     * 11.刷新应用程序上下文
-     * 12.
+     * 11.刷新应用程序上下文                {@link this#refreshContext(ConfigurableApplicationContext)}
+     * 12.刷新后置处理                     {@link this#afterRefresh(ConfigurableApplicationContext, ApplicationArguments)}
+     * 13.停止任务计时秒表
+     * 14.打印启动信息日志
+     * 15.上下文刷新成功监听器启动,步骤3中是为了早期的初始化
+     * 16.调用Runner                      {@link this#callRunners(ApplicationContext, ApplicationArguments)}
+     * 17.监听器执行
      *
      * @param args 应用程序参数，通常使用Main方法传递，例如 --spring.profiles.active/--spring.main.sources/etc
      * @return {@link ConfigurableApplicationContext}
@@ -1081,7 +1086,7 @@ public class DefineSpringApplication extends SpringApplication {
     }
 
     /**
-     * 上下文刷新后调用，改方法可扩展.
+     * 上下文刷新后调用，该方法可扩展.
      *
      * @param context context
      * @param args    args
@@ -1090,132 +1095,272 @@ public class DefineSpringApplication extends SpringApplication {
 
     }
 
+    /**
+     * 调用Runner
+     * ApplicationRunner,CommandLineRunner
+     * Runner调用时机为容器启动完成,可以处理一些自定义操作
+     *
+     * @param context context
+     * @param args    args
+     */
     private void callRunners(ApplicationContext context, ApplicationArguments args) {
+
         List<Object> runners = new ArrayList<>();
+
         runners.addAll(context.getBeansOfType(ApplicationRunner.class).values());
         runners.addAll(context.getBeansOfType(CommandLineRunner.class).values());
+
         AnnotationAwareOrderComparator.sort(runners);
+
         for (Object runner : new LinkedHashSet<>(runners)) {
-            if (runner instanceof ApplicationRunner) {
+
+            if (runner instanceof ApplicationRunner)
+
                 callRunner((ApplicationRunner) runner, args);
-            }
-            if (runner instanceof CommandLineRunner) {
+
+            if (runner instanceof CommandLineRunner)
+
                 callRunner((CommandLineRunner) runner, args);
-            }
+
         }
+
     }
 
+    /**
+     * 调用ApplicationRunner
+     *
+     * @param runner runner
+     * @param args   args
+     */
     private void callRunner(ApplicationRunner runner, ApplicationArguments args) {
+
         try {
+
             (runner).run(args);
+
         } catch (Exception ex) {
+
             throw new IllegalStateException("Failed to execute ApplicationRunner", ex);
+
         }
+
     }
 
+    /**
+     * 调用CommandLineRunner
+     *
+     * @param runner runner
+     * @param args   args
+     */
     private void callRunner(CommandLineRunner runner, ApplicationArguments args) {
+
         try {
+
             (runner).run(args.getSourceArgs());
+
         } catch (Exception ex) {
+
             throw new IllegalStateException("Failed to execute CommandLineRunner", ex);
+
         }
+
     }
 
-    private void handleRunFailure(ConfigurableApplicationContext context,
-                                  Throwable exception,
-                                  Collection<SpringBootExceptionReporter> exceptionReporters,
-                                  SpringApplicationRunListeners listeners) {
+    /**
+     * 处理运行错误
+     *
+     * @param context            context
+     * @param exception          exception
+     * @param exceptionReporters exceptionReporters
+     * @param listeners          listeners
+     */
+    private void handleRunFailure(ConfigurableApplicationContext context, Throwable exception, Collection<SpringBootExceptionReporter> exceptionReporters, SpringApplicationRunListeners listeners) {
+
         try {
+
             try {
+
                 handleExitCode(context, exception);
+
                 if (listeners != null) {
+
                     listeners.failed(context, exception);
+
                 }
+
             } finally {
+
                 reportFailure(exceptionReporters, exception);
+
                 if (context != null) {
+
                     context.close();
+
                 }
+
             }
+
         } catch (Exception ex) {
+
             logger.warn("Unable to close ApplicationContext", ex);
+
         }
+
         ReflectionUtils.rethrowRuntimeException(exception);
+
     }
 
-    private void handleExitCode(ConfigurableApplicationContext context,
-                                Throwable exception) {
+    /**
+     * 处理退出代码错误
+     *
+     * @param context
+     * @param exception
+     */
+    private void handleExitCode(ConfigurableApplicationContext context, Throwable exception) {
+
         int exitCode = getExitCodeFromException(context, exception);
+
         if (exitCode != 0) {
+
             if (context != null) {
+
                 context.publishEvent(new ExitCodeEvent(context, exitCode));
+
             }
+
             SpringBootExceptionHandler handler = getSpringBootExceptionHandler();
+
             if (handler != null) {
+
                 handler.registerExitCode(exitCode);
+
             }
+
         }
+
     }
 
-    private int getExitCodeFromException(ConfigurableApplicationContext context,
-                                         Throwable exception) {
+    /**
+     * 从异常中获取退出代码
+     *
+     * @param context   context
+     * @param exception exception
+     * @return {@link int}
+     */
+    private int getExitCodeFromException(ConfigurableApplicationContext context, Throwable exception) {
+
         int exitCode = getExitCodeFromMappedException(context, exception);
+
         if (exitCode == 0) {
+
             exitCode = getExitCodeFromExitCodeGeneratorException(exception);
+
         }
+
         return exitCode;
+
     }
 
-    private int getExitCodeFromMappedException(ConfigurableApplicationContext context,
-                                               Throwable exception) {
-        if (context == null || !context.isActive()) {
-            return 0;
-        }
+    /**
+     * 从映射异常中获取退出代码
+     *
+     * @param context   context
+     * @param exception exception
+     * @return {@link int}
+     */
+    private int getExitCodeFromMappedException(ConfigurableApplicationContext context, Throwable exception) {
+
+        if (context == null || !context.isActive()) return 0;
+
         ExitCodeGenerators generators = new ExitCodeGenerators();
+
         Collection<ExitCodeExceptionMapper> beans = context.getBeansOfType(ExitCodeExceptionMapper.class).values();
+
         generators.addAll(exception, beans);
+
         return generators.getExitCode();
+
     }
 
+    /**
+     * 从退出代码生成器中获取退出代码
+     *
+     * @param exception exception
+     * @return {@link int}
+     */
     private int getExitCodeFromExitCodeGeneratorException(Throwable exception) {
-        if (exception == null) {
-            return 0;
-        }
-        if (exception instanceof ExitCodeGenerator) {
-            return ((ExitCodeGenerator) exception).getExitCode();
-        }
+
+        if (exception == null) return 0;
+
+        if (exception instanceof ExitCodeGenerator) return ((ExitCodeGenerator) exception).getExitCode();
+
         return getExitCodeFromExitCodeGeneratorException(exception.getCause());
+
     }
 
+    /**
+     * 获取SpringBoot异常处理器
+     *
+     * @return {@link SpringBootExceptionHandler}
+     */
     SpringBootExceptionHandler getSpringBootExceptionHandler() {
+
         if (isMainThread(Thread.currentThread())) {
+
             return SpringBootExceptionHandler.forCurrentThread();
+
         }
+
         return null;
+
     }
 
+    /**
+     * 判断是不是主线程
+     *
+     * @param currentThread currentThread
+     * @return {@link Boolean}
+     */
     private boolean isMainThread(Thread currentThread) {
-        return ("main".equals(currentThread.getName())
-                || "restartedMain".equals(currentThread.getName()))
-                && "main".equals(currentThread.getThreadGroup().getName());
+
+        return ("main".equals(currentThread.getName()) || "restartedMain".equals(currentThread.getName())) && "main".equals(currentThread.getThreadGroup().getName());
+
     }
 
-    private void reportFailure(Collection<SpringBootExceptionReporter> exceptionReporters,
-                               Throwable failure) {
+    /**
+     * 报告失败
+     *
+     * @param exceptionReporters exceptionReporters
+     * @param failure            failure
+     */
+    private void reportFailure(Collection<SpringBootExceptionReporter> exceptionReporters, Throwable failure) {
+
         try {
+
             for (SpringBootExceptionReporter reporter : exceptionReporters) {
+
                 if (reporter.reportException(failure)) {
+
                     registerLoggedException(failure);
+
                     return;
+
                 }
+
             }
+
         } catch (Throwable ex) {
             // Continue with normal handling of the original failure
         }
+
         if (logger.isErrorEnabled()) {
+
             logger.error("Application run failed", failure);
+
             registerLoggedException(failure);
+
         }
+
     }
 
 }

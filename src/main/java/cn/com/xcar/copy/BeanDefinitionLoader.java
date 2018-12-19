@@ -123,20 +123,20 @@ public class BeanDefinitionLoader {
         throw new IllegalArgumentException("Invalid source type " + source.getClass());
     }
 
-    /*private int load(Class<?> source) {
-        if (isGroovyPresent()
+    private int load(Class<?> source) {
+        /*if (isGroovyPresent()
                 && BeanDefinitionLoader.GroovyBeanDefinitionSource.class.isAssignableFrom(source)) {
             // Any GroovyLoaders added in beans{} DSL can contribute beans here
             BeanDefinitionLoader.GroovyBeanDefinitionSource loader = BeanUtils.instantiateClass(source,
                     BeanDefinitionLoader.GroovyBeanDefinitionSource.class);
             load(loader);
-        }
+        }*/
         if (isComponent(source)) {
             this.annotatedReader.register(source);
             return 1;
         }
         return 0;
-    }*/
+    }
 
    /* private int load(BeanDefinitionLoader.GroovyBeanDefinitionSource source) {
         int before = this.xmlReader.getRegistry().getBeanDefinitionCount();
